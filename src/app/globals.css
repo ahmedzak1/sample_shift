@@ -332,3 +332,35 @@ form input:disabled {
 .key-tempo .reset {
   justify-content: flex-end;
 }
+
+.listen {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.listen button {
+  border: 0;
+  border-radius: 0;
+  padding: 9px 12px;
+}
+
+.listen button + button {
+  border-left: 1px solid var(--border);
+}
+
+.listen button.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+.listen button:disabled.on {
+  background: var(--border);
+  color: var(--text);
+}
+
+.controls {
+  flex-wrap: wrap;
+  align-items: center;
+}

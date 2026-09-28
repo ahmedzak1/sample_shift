@@ -9,6 +9,11 @@ export async function loadRubberBand(wasm: BufferSource | WebAssembly.Module): P
   return RubberBandInterface.initialize(module);
 }
 
+/** Rubber Band's pitch scale for a Pitch Shift in semitones. */
+export function pitchScale(pitchShift: number): number {
+  return 2 ** (pitchShift / 12);
+}
+
 export interface ShiftAndStretch {
   pitchShift: number;
   /** Output length ÷ input length. */
@@ -37,7 +42,7 @@ export function shiftAndStretch(
 ): DecodedAudio {
   const channelCount = audio.channels.length;
   const frames = audio.channels[0]?.length ?? 0;
-  const state = rb.rubberband_new(audio.sampleRate, channelCount, OFFLINE_HIGH_QUALITY, timeRatio, 2 ** (pitchShift / 12));
+  const state = rb.rubberband_new(audio.sampleRate, channelCount, OFFLINE_HIGH_QUALITY, timeRatio, pitchScale(pitchShift));
   rb.rubberband_set_expected_input_duration(state, frames);
   rb.rubberband_set_max_process_size(state, BLOCK_FRAMES);
 

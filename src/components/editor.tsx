@@ -12,7 +12,9 @@ import {
   type Region,
   type RegionEdge,
 } from "@/audio/sample-plan";
+import { PreviewPlayer } from "@/audio/preview-player";
 import { renderInWorker } from "@/audio/render-in-worker";
+import { changesKeyOrTempo, decodedAudioFrom, regionAudio } from "@/audio/sample-render";
 import type { SourceTrack } from "@/tracks/source-track";
 import { KeyTempoControls } from "./key-tempo-controls";
 import { Waveform, type WaveformView } from "./waveform";
@@ -21,16 +23,12 @@ interface LoadedTrack {
   track: SourceTrack;
   buffer: AudioBuffer;
   context: AudioContext;
+  /** Plays the Sample with the Target Key and Tempo applied live (or untransformed, for A/B). */
+  player: PreviewPlayer;
 }
 
-/** What's playing: where in the Source Track it started, and when (in context time). */
-interface Playback {
-  node: AudioBufferSourceNode;
-  offset: number;
-  startedAt: number;
-  /** The bounds playback repeats within, or null when it plays through once. */
-  loopBounds: Region | null;
-}
+/** A/B: hear the Sample with the Target Key and Tempo, or the untransformed Source Track. */
+type Listen = "target" | "source-track";
 
 /** The shortest stretch of the Source Track the waveform can zoom to, in seconds. */
 const MIN_VIEW_SECONDS = 0.25;
@@ -102,17 +100,21 @@ export function Editor() {
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [view, setView] = useState<WaveformView>({ start: 0, duration: 1 });
-  const [looping, setLooping] = useState(false);
+  // The preview loops the Region by default: that's how a Sample is auditioned.
+  const [looping, setLooping] = useState(true);
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [listen, setListen] = useState<Listen>("target");
 
-  const playback = useRef<Playback | null>(null);
-  /** Where playback resumes from when nothing is playing. */
+  /** Mirrors `playing` for the player's callbacks, which outlive a render. */
+  const playingRef = useRef(false);
+  /** Where playback resumes from when nothing is playing, and the latest position while it plays. */
   const cursor = useRef(0);
-  const animationFrame = useRef(0);
+  /** Start of what's playing, for the player's end callback (created before the Region was chosen). */
+  const playingFrom = useRef(0);
 
   useEffect(() => () => {
-    cancelAnimationFrame(animationFrame.current);
+    loaded?.player.dispose();
     loaded?.context.close();
   }, [loaded]);
 
@@ -135,13 +137,29 @@ export function Editor() {
       const audio = await (await fetch(track.audioUrl)).arrayBuffer();
       // Decode at the Source Track's own rate so the export keeps it.
       const context = new AudioContext({ sampleRate: track.sampleRate });
-      const buffer = await context.decodeAudioData(audio);
+      const buffer = await context.decodeAudioData(audio).catch((e) => {
+        void context.close();
+        throw e;
+      });
+      setStatus("Starting the audio engine…");
+      const player = await PreviewPlayer.create(context, buffer.numberOfChannels, {
+        onPosition: (seconds) => {
+          if (!playingRef.current) return;
+          cursor.current = seconds;
+          setPlayhead(seconds);
+        },
+        onEnded: () => endPlayback(),
+        onError: (message) => setError(`Playback failed: ${message}`),
+      }).catch((e) => {
+        void context.close();
+        throw e;
+      });
       cursor.current = 0;
       setRegion(null);
       setKeyTempo(NO_KEY_TEMPO_CHANGE);
       setView({ start: 0, duration: buffer.duration });
       setPlayhead(null);
-      setLoaded({ track, buffer, context });
+      setLoaded({ track, buffer, context, player });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -149,78 +167,57 @@ export function Editor() {
     }
   }
 
-  /** Current position of what's playing, wrapping inside the loop bounds. */
-  function position(p: Playback, now: number): number {
-    const t = p.offset + (now - p.startedAt);
-    if (!p.loopBounds) return t;
-    const length = p.loopBounds.end - p.loopBounds.start;
-    return t < p.loopBounds.end ? t : p.loopBounds.start + ((t - p.loopBounds.start) % length);
+  /** What plays: the Region, or the whole Source Track without one. */
+  function playRegion(): Region {
+    return region ?? { start: 0, end: loaded?.buffer.duration ?? 0 };
   }
 
-  function tick() {
-    const p = playback.current;
-    if (!p || !loaded) return;
-    setPlayhead(position(p, loaded.context.currentTime));
-    animationFrame.current = requestAnimationFrame(tick);
+  function setPlayingState(value: boolean) {
+    playingRef.current = value;
+    setPlaying(value);
   }
 
-  function play(from: number = cursor.current, repeat: boolean = looping) {
+  function play(from: number = cursor.current) {
     if (!loaded) return;
-    stop();
-    const { context, buffer } = loaded;
+    const { context, buffer, player } = loaded;
     void context.resume();
-    const bounds = region ?? { start: 0, end: buffer.duration };
+    const bounds = playRegion();
     const offset = from >= bounds.start && from < bounds.end ? from : bounds.start;
+    // Only the Region's audio goes to the audio thread; it's copied again only when the Region changes.
+    player.load(bounds, (r) => regionAudio(decodedAudioFrom(buffer), r));
+    player.play(offset);
+    playingFrom.current = bounds.start;
+    cursor.current = offset;
+    setPlayhead(offset);
+    setPlayingState(true);
+  }
 
-    const node = context.createBufferSource();
-    node.buffer = buffer;
-    node.connect(context.destination);
-    const loopBounds = repeat ? bounds : null;
-    if (loopBounds) {
-      node.loop = true;
-      node.loopStart = loopBounds.start;
-      node.loopEnd = loopBounds.end;
-      node.start(0, offset);
-    } else {
-      node.start(0, offset, bounds.end - offset);
-    }
-    node.onended = () => {
-      if (playback.current?.node !== node) return;
-      playback.current = null;
-      cursor.current = bounds.start;
-      cancelAnimationFrame(animationFrame.current);
-      setPlaying(false);
-      setPlayhead(null);
-    };
-    playback.current = { node, offset, startedAt: context.currentTime, loopBounds };
-    setPlaying(true);
-    animationFrame.current = requestAnimationFrame(tick);
+  function endPlayback() {
+    setPlayingState(false);
+    cursor.current = playingFrom.current;
+    setPlayhead(null);
   }
 
   function pause() {
-    const p = playback.current;
-    if (!loaded || !p) return;
-    cursor.current = position(p, loaded.context.currentTime);
-    stop();
+    if (!loaded || !playingRef.current) return;
+    loaded.player.stop();
+    setPlayingState(false);
     setPlayhead(cursor.current);
   }
 
   function stop() {
-    const p = playback.current;
-    playback.current = null;
-    p?.node.stop();
-    cancelAnimationFrame(animationFrame.current);
-    setPlaying(false);
+    loaded?.player.stop();
+    setPlayingState(false);
   }
 
   function seek(t: number) {
     cursor.current = t;
     setPlayhead(t);
-    if (playback.current) play(t);
+    if (playingRef.current) play(t);
   }
 
   function changeRegion(next: Region | null) {
-    if (playback.current) stop();
+    if (playingRef.current) stop();
     setRegion(next);
     if (next) {
       cursor.current = next.start;
@@ -231,7 +228,7 @@ export function Editor() {
   function onRegionDrag(next: Region, done: boolean) {
     if (!loaded) return;
     if (!done) {
-      if (playback.current) stop();
+      if (playingRef.current) stop();
       setRegion(next);
       return;
     }
@@ -245,11 +242,11 @@ export function Editor() {
     return next !== null;
   }
 
-  function toggleLoop() {
-    const next = !looping;
-    setLooping(next);
-    if (playback.current && loaded) play(position(playback.current, loaded.context.currentTime), next);
-  }
+  // Loop, A/B and the Target Key and Tempo all apply to what's playing, without restarting it.
+  useEffect(() => {
+    loaded?.player.setLoop(looping);
+  }, [loaded, looping]);
+
 
   function zoom(factor: number) {
     if (!loaded) return;
@@ -278,6 +275,13 @@ export function Editor() {
         ...keyTempo,
       })
     : null;
+
+  const previewChanges = plan !== null && changesKeyOrTempo(plan);
+  const pitchShift = plan?.pitchShift ?? 0;
+  const timeRatio = plan?.timeRatio ?? 1;
+  useEffect(() => {
+    loaded?.player.update({ pitchShift, timeRatio, bypass: listen === "source-track" || !previewChanges });
+  }, [loaded, pitchShift, timeRatio, listen, previewChanges]);
 
   async function download() {
     if (!loaded || !plan || exportProgress !== null) return;
@@ -388,9 +392,31 @@ export function Editor() {
               {playing ? "Pause" : region ? "Play Region" : "Play"}
             </button>
             <label className="toggle">
-              <input type="checkbox" checked={looping} onChange={toggleLoop} />
+              <input type="checkbox" checked={looping} onChange={() => setLooping(!looping)} />
               Loop
             </label>
+            <span className="listen" role="radiogroup" aria-label="Listen to">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={listen === "target" && previewChanges}
+                className={listen === "target" && previewChanges ? "on" : ""}
+                disabled={!previewChanges}
+                onClick={() => setListen("target")}
+              >
+                Target
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={listen === "source-track" || !previewChanges}
+                className={listen === "source-track" || !previewChanges ? "on" : ""}
+                disabled={!previewChanges}
+                onClick={() => setListen("source-track")}
+              >
+                Source Track
+              </button>
+            </span>
             <button type="button" className="primary" onClick={download} disabled={exportProgress !== null}>
               {exportProgress === null ? "Download Sample" : `Rendering… ${Math.round(exportProgress * 100)}%`}
             </button>
