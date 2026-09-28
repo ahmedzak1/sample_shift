@@ -6,12 +6,15 @@ import {
   moveRegionEdge,
   normalizeRegion,
   parseRegionTime,
+  NO_KEY_TEMPO_CHANGE,
   planSample,
+  type KeyTempoSettings,
   type Region,
   type RegionEdge,
 } from "@/audio/sample-plan";
-import { decodedAudioFrom, renderSample } from "@/audio/sample-render";
+import { renderInWorker } from "@/audio/render-in-worker";
 import type { SourceTrack } from "@/tracks/source-track";
+import { KeyTempoControls } from "./key-tempo-controls";
 import { Waveform, type WaveformView } from "./waveform";
 
 interface LoadedTrack {
@@ -94,6 +97,10 @@ export function Editor() {
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<LoadedTrack | null>(null);
   const [region, setRegion] = useState<Region | null>(null);
+  const [keyTempo, setKeyTempo] = useState<KeyTempoSettings>(NO_KEY_TEMPO_CHANGE);
+  /** Export progress from 0 to 1, or null when no export is running. */
+  const [exportProgress, setExportProgress] = useState<number | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [view, setView] = useState<WaveformView>({ start: 0, duration: 1 });
   const [looping, setLooping] = useState(false);
   const [playhead, setPlayhead] = useState<number | null>(null);
@@ -131,6 +138,7 @@ export function Editor() {
       const buffer = await context.decodeAudioData(audio);
       cursor.current = 0;
       setRegion(null);
+      setKeyTempo(NO_KEY_TEMPO_CHANGE);
       setView({ start: 0, duration: buffer.duration });
       setPlayhead(null);
       setLoaded({ track, buffer, context });
@@ -263,18 +271,32 @@ export function Editor() {
     setView({ start, duration });
   }
 
-  function download() {
-    if (!loaded) return;
-    const { buffer, track } = loaded;
-    const plan = planSample({ source: { title: track.title, durationSeconds: buffer.duration }, region });
-    const wav = renderSample(decodedAudioFrom(buffer), plan.region);
-    const url = URL.createObjectURL(new Blob([wav as BlobPart], { type: "audio/wav" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = plan.filename;
-    a.click();
-    // Revoking straight after click() can cancel the download in Firefox and Safari.
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  const plan = loaded
+    ? planSample({
+        source: { title: loaded.track.title, durationSeconds: loaded.buffer.duration },
+        region,
+        ...keyTempo,
+      })
+    : null;
+
+  async function download() {
+    if (!loaded || !plan || exportProgress !== null) return;
+    setExportError(null);
+    setExportProgress(0);
+    try {
+      const wav = await renderInWorker(loaded.buffer, plan, setExportProgress);
+      const url = URL.createObjectURL(new Blob([wav as BlobPart], { type: "audio/wav" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = plan.filename;
+      a.click();
+      // Revoking straight after click() can cancel the download in Firefox and Safari.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportProgress(null);
+    }
   }
 
   const total = loaded?.buffer.duration ?? 0;
@@ -357,6 +379,10 @@ export function Editor() {
             )}
           </div>
 
+          {plan && (
+            <KeyTempoControls settings={keyTempo} onChange={setKeyTempo} plan={plan} />
+          )}
+
           <div className="controls">
             <button type="button" onClick={playing ? pause : () => play()}>
               {playing ? "Pause" : region ? "Play Region" : "Play"}
@@ -365,10 +391,19 @@ export function Editor() {
               <input type="checkbox" checked={looping} onChange={toggleLoop} />
               Loop
             </label>
-            <button type="button" className="primary" onClick={download}>
-              Download Sample
+            <button type="button" className="primary" onClick={download} disabled={exportProgress !== null}>
+              {exportProgress === null ? "Download Sample" : `Rendering… ${Math.round(exportProgress * 100)}%`}
             </button>
           </div>
+          {exportProgress !== null && (
+            <progress className="export-progress" value={exportProgress} max={1} aria-label="Export progress" />
+          )}
+          {plan && <p className="meta filename">Saves as {plan.filename}</p>}
+          {exportError && (
+            <p className="error" role="alert">
+              {exportError}
+            </p>
+          )}
         </section>
       )}
     </>

@@ -4,3 +4,5 @@ next-env.d.ts
 *.tsbuildinfo
 # Source Track cache (fetched audio)
 .cache/
+# Copied from node_modules by scripts/copy-rubberband-wasm.mjs
+public/rubberband.wasm

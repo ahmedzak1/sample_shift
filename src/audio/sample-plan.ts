@@ -1,16 +1,45 @@
+import { pitchShift, shortKeyName, type MusicalKey } from "./musical-key";
+
 /** Start and end of a Sample within its Source Track, in seconds. */
 export interface Region {
   start: number;
   end: number;
 }
 
-export interface SamplePlanInput {
+/** A key and tempo, either of which may not be set yet. Tempo is in BPM. */
+export interface KeyAndTempo {
+  key: MusicalKey | null;
+  tempo: number | null;
+}
+
+/** The Original and Target Key and Tempo, and how many whole octaves to add to the Pitch Shift. */
+export interface KeyTempoSettings {
+  original: KeyAndTempo;
+  target: KeyAndTempo;
+  octaveOffset: number;
+}
+
+const NOT_SET: KeyAndTempo = { key: null, tempo: null };
+
+export const NO_KEY_TEMPO_CHANGE: KeyTempoSettings = { original: NOT_SET, target: NOT_SET, octaveOffset: 0 };
+
+export interface SamplePlanInput extends Partial<KeyTempoSettings> {
   source: { title: string; durationSeconds: number };
   region: Region | null;
 }
 
 export interface SamplePlan {
   region: Region;
+  /** True when both keys are set (in the same mode), so the Pitch Shift applies. */
+  changesKey: boolean;
+  /** True when both tempos are set, so the stretch applies. */
+  changesTempo: boolean;
+  /** Pitch Shift in semitones; 0 leaves the key alone. */
+  pitchShift: number;
+  /** Output length ÷ input length; 1 leaves the tempo alone. */
+  timeRatio: number;
+  /** Target Tempo as a percentage of the Original Tempo. */
+  tempoPercent: number;
   filename: string;
 }
 
@@ -77,18 +106,41 @@ export function moveRegionEdge(
   return moved.end > moved.start ? moved : null;
 }
 
+/** A tempo for filenames: at most two decimals, trailing zeros dropped (90, 92.5). */
+function filenameTempo(tempo: number): string {
+  return String(Math.round(tempo * 100) / 100);
+}
+
 /** Works out what gets rendered and downloaded for a Sample. */
-export function planSample({ source, region: requested }: SamplePlanInput): SamplePlan {
-  const title = filenameTitle(source.title);
-  const region = requested && normalizeRegion(requested, source.durationSeconds);
-  if (!region) {
-    return {
-      region: { start: 0, end: source.durationSeconds },
-      filename: `${title}.wav`,
-    };
-  }
+export function planSample({
+  source,
+  region: requested,
+  original = NOT_SET,
+  target = NOT_SET,
+  octaveOffset = 0,
+}: SamplePlanInput): SamplePlan {
+  const region = (requested && normalizeRegion(requested, source.durationSeconds)) ?? null;
+
+  // A key change needs both keys (in the same mode); a tempo change needs both tempos.
+  const targetKey =
+    original.key && target.key && original.key.mode === target.key.mode ? target.key : null;
+  const targetTempo = original.tempo && target.tempo && original.tempo > 0 && target.tempo > 0 ? target.tempo : null;
+
+  const nameParts = [filenameTitle(source.title)];
+  if (region) nameParts.push(`${filenameTime(region.start)}-${filenameTime(region.end)}`);
+  const targets = [
+    ...(targetKey ? [shortKeyName(targetKey)] : []),
+    ...(targetTempo ? [`${filenameTempo(targetTempo)}bpm`] : []),
+  ];
+  if (targets.length) nameParts.push(targets.join(" "));
+
   return {
-    region,
-    filename: `${title} - ${filenameTime(region.start)}-${filenameTime(region.end)}.wav`,
+    region: region ?? { start: 0, end: source.durationSeconds },
+    changesKey: targetKey !== null,
+    changesTempo: targetTempo !== null,
+    pitchShift: targetKey ? pitchShift(original.key!, targetKey, octaveOffset) : 0,
+    timeRatio: targetTempo ? original.tempo! / targetTempo : 1,
+    tempoPercent: targetTempo ? Math.round((targetTempo / original.tempo!) * 1000) / 10 : 100,
+    filename: `${nameParts.join(" - ")}.wav`,
   };
 }

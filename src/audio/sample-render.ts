@@ -1,3 +1,4 @@
+import { shiftAndStretch, type RubberBand } from "./rubber-band";
 import type { Region } from "./sample-plan";
 
 /** Decoded audio of a Source Track: one Float32Array per channel, samples in [-1, 1]. */
@@ -60,22 +61,56 @@ export function encodeWav(audio: DecodedAudio): Uint8Array {
 
 const FADE_SECONDS = 0.005;
 
-/** Renders a Sample: takes the Region from the Source Track, fades its edges, and encodes it as a 24-bit WAV. */
-export function renderSample(source: DecodedAudio, region: Region): Uint8Array {
+/** What renderSample needs from a SamplePlan. */
+export interface RenderPlan {
+  region: Region;
+  /** Defaults to 0 (key unchanged). */
+  pitchShift?: number;
+  /** Output length ÷ input length; defaults to 1 (tempo unchanged). */
+  timeRatio?: number;
+}
+
+/** Whether rendering this plan changes key or tempo, and so needs Rubber Band. */
+export function changesKeyOrTempo({ pitchShift = 0, timeRatio = 1 }: RenderPlan): boolean {
+  return pitchShift !== 0 || timeRatio !== 1;
+}
+
+/** The part of the audio inside the Region. */
+export function regionAudio(source: DecodedAudio, region: Region): DecodedAudio {
   const startFrame = Math.round(region.start * source.sampleRate);
   const endFrame = Math.round(region.end * source.sampleRate);
-  const length = Math.max(0, endFrame - startFrame);
-  const fadeFrames = Math.min(Math.round(FADE_SECONDS * source.sampleRate), Math.floor(length / 2));
+  return { sampleRate: source.sampleRate, channels: source.channels.map((c) => c.slice(startFrame, endFrame)) };
+}
 
-  const channels = source.channels.map((channel) => {
-    const sampleChannel = channel.slice(startFrame, endFrame);
+/** Fades both ends of each channel in place, over about 5 ms, so the Sample's edges don't click. */
+function fadeEdges(audio: DecodedAudio): void {
+  for (const channel of audio.channels) {
+    const length = channel.length;
+    const fadeFrames = Math.min(Math.round(FADE_SECONDS * audio.sampleRate), Math.floor(length / 2));
     for (let i = 0; i < fadeFrames; i++) {
       const gain = i / fadeFrames;
-      sampleChannel[i] *= gain;
-      sampleChannel[length - 1 - i] *= gain;
+      channel[i] *= gain;
+      channel[length - 1 - i] *= gain;
     }
-    return sampleChannel;
-  });
+  }
+}
 
-  return encodeWav({ sampleRate: source.sampleRate, channels });
+/**
+ * Renders a Sample: takes the Region from the Source Track, applies the Pitch Shift and stretch
+ * with Rubber Band (only needed when the plan changes key or tempo), fades the edges, and encodes
+ * a 24-bit WAV at the Source Track's sample rate.
+ */
+export function renderSample(
+  source: DecodedAudio,
+  { region, pitchShift = 0, timeRatio = 1 }: RenderPlan,
+  rubberBand?: RubberBand,
+  onProgress?: (fraction: number) => void,
+): Uint8Array {
+  let audio = regionAudio(source, region);
+  if (changesKeyOrTempo({ region, pitchShift, timeRatio })) {
+    if (!rubberBand) throw new Error("Changing key or tempo needs Rubber Band.");
+    audio = shiftAndStretch(rubberBand, audio, { pitchShift, timeRatio }, onProgress);
+  }
+  fadeEdges(audio);
+  return encodeWav(audio);
 }

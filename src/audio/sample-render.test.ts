@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
+import { loadRubberBand, type RubberBand } from "./rubber-band";
 import { encodeWav, renderSample } from "./sample-render";
 
 function ascii(bytes: Uint8Array, offset: number, length: number): string {
@@ -65,14 +68,14 @@ describe("renderSample", () => {
   const source = { sampleRate: rate, channels: [ramp] };
 
   it("exports only the Region", () => {
-    const values = monoValues(renderSample(source, { start: 0.5, end: 1.25 }));
+    const values = monoValues(renderSample(source, { region: { start: 0.5, end: 1.25 } }));
 
     expect(values).toHaveLength(6000); // 0.75 s at 8 kHz
     expect(values[3000]).toBeCloseTo(0.4375, 5); // source frame 7000 = 0.875 s
   });
 
   it("fades the Sample in and out over about 5 ms so its edges don't click", () => {
-    const values = monoValues(renderSample(source, { start: 0.5, end: 1.25 }));
+    const values = monoValues(renderSample(source, { region: { start: 0.5, end: 1.25 } }));
 
     expect(values[0]).toBe(0);
     expect(values.at(-1)).toBe(0);
@@ -80,5 +83,64 @@ describe("renderSample", () => {
     expect(values[20]).toBeLessThan(4020 / 16000);
     expect(values[40]).toBeCloseTo(4040 / 16000, 5); // 5 ms in: full level
     expect(values[5959]).toBeCloseTo(9959 / 16000, 5); // 5 ms before the end: full level
+  });
+});
+
+describe("renderSample with a Pitch Shift or stretch (real Rubber Band)", () => {
+  const rate = 44100;
+  const seconds = 2;
+  const sine = (hz: number) =>
+    new Float32Array(seconds * rate).map((_, f) => 0.5 * Math.sin((2 * Math.PI * hz * f) / rate));
+  const source = { sampleRate: rate, channels: [sine(440)] };
+  const wholeTrack = { start: 0, end: seconds };
+  let rubberBand: RubberBand;
+
+  beforeAll(async () => {
+    const wasm = await readFile(path.join(process.cwd(), "node_modules/rubberband-wasm/dist/rubberband.wasm"));
+    rubberBand = await loadRubberBand(wasm);
+  });
+
+  /** Frequency of a mono WAV's middle half, by counting upward zero crossings. */
+  function frequency(wav: Uint8Array): number {
+    const values = monoValues(wav);
+    const from = Math.floor(values.length / 4);
+    const to = Math.floor((values.length * 3) / 4);
+    let crossings = 0;
+    for (let i = from + 1; i < to; i++) if (values[i - 1] < 0 && values[i] >= 0) crossings++;
+    return crossings / ((to - from) / rate);
+  }
+
+  it("raises a 440 Hz tone by 3 semitones to about 523 Hz, keeping its length", () => {
+    const wav = renderSample(source, { region: wholeTrack, pitchShift: 3, timeRatio: 1 }, rubberBand);
+
+    expect(frequency(wav)).toBeGreaterThan(523.25 * 0.99);
+    expect(frequency(wav)).toBeLessThan(523.25 * 1.01);
+    expect(monoValues(wav).length).toBeGreaterThan(seconds * rate * 0.995);
+    expect(monoValues(wav).length).toBeLessThan(seconds * rate * 1.005);
+  });
+
+  it("stretches the Sample to the time ratio without changing its pitch", () => {
+    const wav = renderSample(source, { region: wholeTrack, pitchShift: 0, timeRatio: 1.5 }, rubberBand);
+
+    expect(monoValues(wav).length).toBeGreaterThan(3 * rate * 0.995); // 2 s × 1.5
+    expect(monoValues(wav).length).toBeLessThan(3 * rate * 1.005);
+    expect(frequency(wav)).toBeGreaterThan(440 * 0.99);
+    expect(frequency(wav)).toBeLessThan(440 * 1.01);
+  });
+
+  it("gives back the source itself when there's no Pitch Shift and no stretch", () => {
+    const values = monoValues(renderSample(source, { region: wholeTrack, pitchShift: 0, timeRatio: 1 }, rubberBand));
+    const original = source.channels[0];
+    const fade = Math.round(0.005 * rate);
+
+    expect(values).toHaveLength(original.length);
+    for (let f = fade; f < original.length - fade; f += 997) expect(values[f]).toBeCloseTo(original[f], 5);
+  });
+
+  it("still fades the edges of a shifted Sample", () => {
+    const values = monoValues(renderSample(source, { region: wholeTrack, pitchShift: -2, timeRatio: 0.8 }, rubberBand));
+
+    expect(values[0]).toBe(0);
+    expect(values.at(-1)).toBe(0);
   });
 });

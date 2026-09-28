@@ -226,3 +226,109 @@ button:disabled {
 form input:disabled {
   opacity: 0.6;
 }
+
+.key-tempo {
+  margin: 20px 0 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.key-tempo legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.key-tempo .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 20px;
+  margin-top: 10px;
+}
+
+.key-tempo .row:first-of-type {
+  margin-top: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field select,
+.field input {
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+
+.field select {
+  min-width: 250px;
+  max-width: 100%;
+}
+
+.field .bpm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field .bpm input {
+  width: 90px;
+  font-variant-numeric: tabular-nums;
+}
+
+
+
+
+.octave {
+  display: flex;
+  gap: 6px;
+}
+
+.octave button {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.export-progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin-top: 10px;
+  accent-color: var(--accent);
+}
+
+.filename {
+  margin: 8px 0 0;
+  word-break: break-all;
+}
+
+.key-tempo .readout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 110px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.key-tempo .readout strong {
+  padding: 7px 0;
+  color: var(--text);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.key-tempo .reset {
+  justify-content: flex-end;
+}

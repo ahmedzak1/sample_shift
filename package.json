@@ -7,12 +7,16 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node scripts/copy-rubberband-wasm.mjs",
+    "predev": "node scripts/copy-rubberband-wasm.mjs",
+    "prebuild": "node scripts/copy-rubberband-wasm.mjs"
   },
   "dependencies": {
     "next": "^16.3.6",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "rubberband-wasm": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
