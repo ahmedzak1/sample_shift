@@ -38,6 +38,27 @@ function formatDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** Quick fetches (cache hits) finish before the counter would appear. */
+const SHOW_ELAPSED_AFTER_SECONDS = 2;
+
+/** A status line with a spinner and a seconds counter, since a first fetch can take half a minute. */
+function FetchProgress({ message }: { message: string }) {
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(startedAt);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+  const seconds = Math.floor((now - startedAt) / 1000);
+  return (
+    <p className="status" role="status">
+      <span className="spinner" aria-hidden="true" />
+      {message}
+      {seconds >= SHOW_ELAPSED_AFTER_SECONDS && <span className="elapsed"> {seconds}s</span>}
+    </p>
+  );
+}
+
 interface RegionTimeInputProps {
   label: string;
   value: number;
@@ -262,19 +283,24 @@ export function Editor() {
   return (
     <>
       <form onSubmit={fetchTrack}>
+        {/* Plain text, not type="url": links without https:// (e.g. youtu.be/…) are fine. */}
         <input
-          type="url"
+          type="text"
+          inputMode="url"
           required
           placeholder="Paste a YouTube link"
           value={link}
           onChange={(e) => setLink(e.target.value)}
           aria-label="YouTube link"
+          disabled={status !== null}
+          spellCheck={false}
+          autoComplete="off"
         />
         <button type="submit" className="primary" disabled={status !== null}>
           Fetch
         </button>
       </form>
-      {status && <p className="status">{status}</p>}
+      {status && <FetchProgress message={status} />}
       {error && <p className="error" role="alert">{error}</p>}
 
       {loaded && (

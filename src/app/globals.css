@@ -53,7 +53,7 @@ form {
   gap: 8px;
 }
 
-input[type="url"] {
+form input {
   flex: 1;
   min-width: 0;
   padding: 9px 12px;
@@ -190,4 +190,39 @@ button:disabled {
 
 .toggle input {
   accent-color: var(--accent);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status .elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+form input:disabled {
+  opacity: 0.6;
 }

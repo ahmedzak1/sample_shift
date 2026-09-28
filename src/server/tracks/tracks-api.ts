@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { SourceTrack } from "@/tracks/source-track";
-import type { Fetcher } from "./fetcher";
+import { FetchFailure, type Fetcher, type FetchFailureKind } from "./fetcher";
+import { parseVideoId, VIDEO_ID } from "./youtube-link";
 
 export interface TracksApiDeps {
   fetcher: Fetcher;
@@ -21,8 +22,6 @@ interface TrackMeta {
   fetchedAt: string;
 }
 
-const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
-
 const AUDIO_TYPES: Record<string, string> = {
   ".flac": "audio/flac",
   ".wav": "audio/wav",
@@ -31,21 +30,54 @@ const AUDIO_TYPES: Record<string, string> = {
   ".opus": "audio/ogg",
 };
 
-function parseVideoId(link: unknown): string | null {
-  if (typeof link !== "string") return null;
-  let url: URL;
-  try {
-    url = new URL(link);
-  } catch {
-    return null;
-  }
-  const isYouTube = url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com");
-  const id = url.searchParams.get("v");
-  return isYouTube && id && VIDEO_ID.test(id) ? id : null;
+/** Error codes the browser can tell apart; `error` is the plain-language message to show. */
+export type TracksErrorCode =
+  | "not-youtube"
+  | "invalid-id"
+  | "not-cached"
+  | Exclude<FetchFailureKind, "failed">
+  | "fetch-failed";
+
+function jsonError(status: number, code: TracksErrorCode, message: string): Response {
+  return Response.json({ code, error: message }, { status });
 }
 
-function jsonError(status: number, message: string): Response {
-  return Response.json({ error: message }, { status });
+const NOT_YOUTUBE_MESSAGE =
+  "That isn't a YouTube video link. Paste a link like https://www.youtube.com/watch?v=… or https://youtu.be/…";
+
+const FAILURE_RESPONSES: Record<
+  FetchFailureKind,
+  { status: number; code: TracksErrorCode; message: (failure: FetchFailure) => string }
+> = {
+  private: { status: 403, code: "private", message: () => "This video is private, so it can't be fetched." },
+  "age-restricted": {
+    status: 403,
+    code: "age-restricted",
+    message: () => "This video is age-restricted, and YouTube won't hand it over without signing in.",
+  },
+  "region-blocked": { status: 451, code: "region-blocked", message: () => "This video isn't available in your country." },
+  unavailable: {
+    status: 404,
+    code: "unavailable",
+    message: () => "This video is unavailable. It may have been deleted, or the link is wrong.",
+  },
+  "tool-missing": {
+    status: 503,
+    code: "tool-missing",
+    message: (f) => `${f.toolName ?? "A required tool"} isn't installed or can't be found. Install it, then restart Sample Shift.`,
+  },
+  timeout: { status: 504, code: "timeout", message: () => "Fetching took too long and was stopped. Try again in a moment." },
+  failed: { status: 502, code: "fetch-failed", message: (f) => `Fetching from YouTube failed: ${f.detail}` },
+};
+
+/** Turns anything a fetch threw into a plain-language error response. */
+function fetchFailureResponse(error: unknown): Response {
+  const failure =
+    error instanceof FetchFailure
+      ? error
+      : new FetchFailure("failed", error instanceof Error ? error.message : String(error));
+  const { status, code, message } = FAILURE_RESPONSES[failure.kind];
+  return jsonError(status, code, message(failure));
 }
 
 export function createTracksApi({ fetcher, cacheDir }: TracksApiDeps) {
@@ -94,13 +126,13 @@ export function createTracksApi({ fetcher, cacheDir }: TracksApiDeps) {
     async createTrack(request: Request): Promise<Response> {
       const body = await request.json().catch(() => null);
       const id = parseVideoId(body?.url);
-      if (!id) return jsonError(400, "That doesn't look like a YouTube video link.");
+      if (!id) return jsonError(400, "not-youtube", NOT_YOUTUBE_MESSAGE);
 
       let meta: TrackMeta;
       try {
         meta = (await readMeta(id)) ?? (await fetchIntoCache(id));
       } catch (error) {
-        return jsonError(502, error instanceof Error ? error.message : "Fetching from YouTube failed.");
+        return fetchFailureResponse(error);
       }
 
       return Response.json({
@@ -113,9 +145,9 @@ export function createTracksApi({ fetcher, cacheDir }: TracksApiDeps) {
     },
 
     async getAudio(id: string): Promise<Response> {
-      if (!VIDEO_ID.test(id)) return jsonError(400, "Invalid track id.");
+      if (!VIDEO_ID.test(id)) return jsonError(400, "invalid-id", "Invalid track id.");
       const meta = await readMeta(id);
-      if (!meta) return jsonError(404, "No cached Source Track with that id.");
+      if (!meta) return jsonError(404, "not-cached", "No cached Source Track with that id.");
 
       const file = path.join(trackDir(id), meta.audioFile);
       const { size } = await stat(file);

@@ -11,3 +11,26 @@ export interface FetchedAudio {
 export interface Fetcher {
   fetch(videoId: string, outDir: string): Promise<FetchedAudio>;
 }
+
+export type FetchFailureKind =
+  | "private"
+  | "age-restricted"
+  | "region-blocked"
+  | "unavailable"
+  | "tool-missing"
+  | "timeout"
+  | "failed";
+
+/** A Fetcher failure, classified so the Tracks API can explain it. */
+export class FetchFailure extends Error {
+  constructor(
+    readonly kind: FetchFailureKind,
+    /** The underlying tool's own wording. */
+    readonly detail: string,
+    /** For "tool-missing": the name to show you, e.g. "ffmpeg" or "Python (needed to run yt-dlp)". */
+    readonly toolName?: string,
+  ) {
+    super(detail);
+    this.name = "FetchFailure";
+  }
+}
