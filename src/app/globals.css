@@ -7,6 +7,8 @@
   --accent: #d9480f;
   --wave: #3b3b44;
   --error: #c92a2a;
+  --region: rgba(217, 72, 15, 0.14);
+  --region-edge: #d9480f;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +21,8 @@
     --accent: #ff7a3d;
     --wave: #c8c8d2;
     --error: #ff6b6b;
+    --region: rgba(255, 122, 61, 0.18);
+    --region-edge: #ff7a3d;
   }
 }
 
@@ -121,4 +125,69 @@ button:disabled {
   display: flex;
   gap: 8px;
   margin-top: 16px;
+}
+
+.waveform {
+  cursor: crosshair;
+  touch-action: none;
+  border-radius: 4px;
+}
+
+.zoom,
+.region {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.zoom button {
+  min-width: 36px;
+  padding: 5px 10px;
+}
+
+.zoom input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+
+.region {
+  min-height: 38px;
+}
+
+.region .meta {
+  margin: 0;
+}
+
+.time-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.time-field input {
+  width: 96px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
 }

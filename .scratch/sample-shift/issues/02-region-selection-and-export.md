@@ -4,13 +4,21 @@
 
 **Blocked by:** 01 — Walking skeleton
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Drag to create a Region; drag its edges to adjust; type exact start and end times
-- [ ] Zoom the waveform
-- [ ] Play the Region and loop it
-- [ ] Clearing the Region means the whole Source Track is exported
-- [ ] The export contains only the Region, with ~5 ms fades in and out
-- [ ] Filename is `{title} - {start}-{end}.wav`, with characters that aren't allowed in filenames removed from the title
-- [ ] Sample Plan tests: filename formatting (times, removing bad characters), no Region means the whole Source Track
-- [ ] Sample Render tests: output length equals Region length; the first and last ~5 ms ramp from and to silence
+- [x] Drag to create a Region; drag its edges to adjust; type exact start and end times
+- [x] Zoom the waveform
+- [x] Play the Region and loop it
+- [x] Clearing the Region means the whole Source Track is exported
+- [x] The export contains only the Region, with ~5 ms fades in and out
+- [x] Filename is `{title} - {start}-{end}.wav`, with characters that aren't allowed in filenames removed from the title
+- [x] Sample Plan tests: filename formatting (times, removing bad characters), no Region means the whole Source Track
+- [x] Sample Render tests: output length equals Region length; the first and last ~5 ms ramp from and to silence
+
+## Comments
+
+- Filename times are written `1m12s-1m20.5s`, because Windows forbids `:` in filenames. With no Region the filename stays `{title}.wav`. **Open for ticket 06:** decide what a whole-track export with a Target Key/Tempo is called (e.g. `{title} - Am 90bpm.wav`).
+- Typed times work before a Region exists (typing an edge creates a Region from the other end of the Source Track). A time that would put the edges out of order is refused and the field reverts (`moveRegionEdge` in Sample Plan).
+- Control characters in titles become spaces rather than being removed, so words don't run together. Other characters that aren't allowed are removed.
+- Extras beyond the ticket: clicking the waveform moves the playhead, a Zoom to Region button, and a scroll slider when zoomed.
+- Checked in the browser: drag creates a Region, dragging an edge adjusts it, typed times work, the Region export is correct (`Me at the zoo - 0m05s-0m10.575s.wav`, 5.57 s, starts at silence), Loop repeats, and zoom and scroll work.
