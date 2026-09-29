@@ -8,3 +8,6 @@ next-env.d.ts
 public/rubberband.wasm
 public/preview-worklet.js
 public/estimate-worker.js
+
+# Session handoff notes (local only)
+HANDOFF.md
