@@ -1,4 +1,4 @@
-import { pitchShift, shortKeyName, type MusicalKey } from "./musical-key";
+import { pitchShift, sameKey, shortKeyName, type MusicalKey } from "./musical-key";
 
 /** Start and end of a Sample within its Source Track, in seconds. */
 export interface Region {
@@ -22,6 +22,29 @@ export interface KeyTempoSettings {
 const NOT_SET: KeyAndTempo = { key: null, tempo: null };
 
 export const NO_KEY_TEMPO_CHANGE: KeyTempoSettings = { original: NOT_SET, target: NOT_SET, octaveOffset: 0 };
+
+/**
+ * Sets the Original Key. A Target Key you haven't touched (not set, or still the Original Key)
+ * moves with it and one you've chosen stays; a change of mode resets it and the octave offset,
+ * because the Target Key must be in the Original Key's mode.
+ */
+export function withOriginalKey(settings: KeyTempoSettings, key: MusicalKey | null): KeyTempoSettings {
+  const { original, target } = settings;
+  const modeChanged = key === null || target.key === null || target.key.mode !== key.mode;
+  const untouched = target.key === null || sameKey(target.key, original.key);
+  return {
+    original: { ...original, key },
+    target: { ...target, key: modeChanged || untouched ? key : target.key },
+    octaveOffset: modeChanged ? 0 : settings.octaveOffset,
+  };
+}
+
+/** Sets the Original Tempo. A Target Tempo you haven't touched (not set, or still the Original) moves with it. */
+export function withOriginalTempo(settings: KeyTempoSettings, tempo: number | null): KeyTempoSettings {
+  const { original, target } = settings;
+  const untouched = target.tempo === null || target.tempo === original.tempo;
+  return { ...settings, original: { ...original, tempo }, target: { ...target, tempo: untouched ? tempo : target.tempo } };
+}
 
 export interface SamplePlanInput extends Partial<KeyTempoSettings> {
   source: { title: string; durationSeconds: number };

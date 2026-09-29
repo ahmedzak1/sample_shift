@@ -1,5 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { formatRegionTime, moveRegionEdge, parseRegionTime, planSample } from "./sample-plan";
+import {
+  formatRegionTime,
+  moveRegionEdge,
+  NO_KEY_TEMPO_CHANGE,
+  parseRegionTime,
+  planSample,
+  withOriginalKey,
+  withOriginalTempo,
+  type KeyTempoSettings,
+} from "./sample-plan";
+
+describe("changing the Original Key or Tempo", () => {
+  const aMinor = { tonic: 9, mode: "minor" as const };
+  const dMinor = { tonic: 2, mode: "minor" as const };
+  const eMinor = { tonic: 4, mode: "minor" as const };
+  const cMajor = { tonic: 0, mode: "major" as const };
+
+  it("starts the targets at the first Original Key and Tempo", () => {
+    const next = withOriginalTempo(withOriginalKey(NO_KEY_TEMPO_CHANGE, aMinor), 100);
+
+    expect(next.target).toEqual({ key: aMinor, tempo: 100 });
+  });
+
+  it("moves a target you haven't touched along with the Original", () => {
+    const untouched: KeyTempoSettings = { original: { key: aMinor, tempo: 100 }, target: { key: aMinor, tempo: 100 }, octaveOffset: 0 };
+
+    expect(withOriginalKey(untouched, eMinor).target.key).toEqual(eMinor);
+    expect(withOriginalTempo(untouched, 120).target.tempo).toBe(120);
+  });
+
+  it("keeps a target you've chosen", () => {
+    const chosen: KeyTempoSettings = { original: { key: aMinor, tempo: 100 }, target: { key: dMinor, tempo: 90 }, octaveOffset: 1 };
+
+    expect(withOriginalKey(chosen, eMinor)).toMatchObject({ target: { key: dMinor }, octaveOffset: 1 });
+    expect(withOriginalTempo(chosen, 120).target.tempo).toBe(90);
+  });
+
+  it("resets the Target Key and octave offset when the mode changes", () => {
+    const chosen: KeyTempoSettings = { original: { key: aMinor, tempo: null }, target: { key: dMinor, tempo: null }, octaveOffset: -1 };
+
+    expect(withOriginalKey(chosen, cMajor)).toMatchObject({ target: { key: cMajor }, octaveOffset: 0 });
+  });
+
+  it("clears the Target Key along with the Original Key", () => {
+    const chosen: KeyTempoSettings = { original: { key: aMinor, tempo: null }, target: { key: dMinor, tempo: null }, octaveOffset: 1 };
+
+    expect(withOriginalKey(chosen, null)).toMatchObject({ original: { key: null }, target: { key: null }, octaveOffset: 0 });
+  });
+});
 
 describe("moveRegionEdge", () => {
   it("moves one edge of the Region to a typed time", () => {

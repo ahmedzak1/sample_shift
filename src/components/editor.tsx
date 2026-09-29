@@ -12,11 +12,20 @@ import {
   type Region,
   type RegionEdge,
 } from "@/audio/sample-plan";
+import {
+  applyEstimate,
+  isTooShortForEstimate,
+  NO_CORRECTIONS,
+  type Corrections,
+  type Estimate,
+} from "@/audio/estimate";
+import { sameKey } from "@/audio/musical-key";
+import { estimateInWorker } from "@/audio/estimate-in-worker";
 import { PreviewPlayer } from "@/audio/preview-player";
 import { renderInWorker } from "@/audio/render-in-worker";
 import { changesKeyOrTempo, decodedAudioFrom, regionAudio } from "@/audio/sample-render";
 import type { SourceTrack } from "@/tracks/source-track";
-import { KeyTempoControls } from "./key-tempo-controls";
+import { KeyTempoControls, type EstimateStatus } from "./key-tempo-controls";
 import { Waveform, type WaveformView } from "./waveform";
 
 interface LoadedTrack {
@@ -96,6 +105,13 @@ export function Editor() {
   const [loaded, setLoaded] = useState<LoadedTrack | null>(null);
   const [region, setRegion] = useState<Region | null>(null);
   const [keyTempo, setKeyTempo] = useState<KeyTempoSettings>(NO_KEY_TEMPO_CHANGE);
+  const [estimateStatus, setEstimateStatus] = useState<EstimateStatus>({ state: "none" });
+  /** Original values you've corrected by hand; read from a ref because Estimates finish later. */
+  const corrections = useRef<Corrections>(NO_CORRECTIONS);
+  /** Increases with every Estimate started, so a late one for an old Region is ignored. */
+  const estimateRun = useRef(0);
+  /** The whole-Source-Track Estimate, reused when the Region is cleared. */
+  const trackEstimate = useRef<Estimate | null>(null);
   /** Export progress from 0 to 1, or null when no export is running. */
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -157,9 +173,12 @@ export function Editor() {
       cursor.current = 0;
       setRegion(null);
       setKeyTempo(NO_KEY_TEMPO_CHANGE);
+      corrections.current = NO_CORRECTIONS;
+      trackEstimate.current = null;
       setView({ start: 0, duration: buffer.duration });
       setPlayhead(null);
       setLoaded({ track, buffer, context, player });
+      void runEstimate(buffer, null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -223,6 +242,43 @@ export function Editor() {
       cursor.current = next.start;
       setPlayhead(next.start);
     }
+    if (loaded) void runEstimate(loaded.buffer, next);
+  }
+
+  /**
+   * Estimates key and tempo for `estimated` (the Region, or the whole Source Track when null,
+   * reusing its Estimate once made) and applies it to the Original values you haven't corrected.
+   * `discardCorrections` is "New Estimate": your corrections go too, but only once it succeeds.
+   */
+  async function runEstimate(buffer: AudioBuffer, estimated: Region | null, discardCorrections = false) {
+    const run = ++estimateRun.current;
+    const scope = estimated ? "Region" : "Source Track";
+    const tooShort = estimated !== null && isTooShortForEstimate(estimated);
+    setEstimateStatus({ state: "running", scope, tooShort });
+    try {
+      const estimate =
+        !estimated && trackEstimate.current && !discardCorrections
+          ? trackEstimate.current
+          : await estimateInWorker(buffer, estimated ?? { start: 0, end: buffer.duration });
+      if (run !== estimateRun.current) return;
+      if (!estimated) trackEstimate.current = estimate;
+      if (discardCorrections) corrections.current = NO_CORRECTIONS;
+      setKeyTempo((current) => applyEstimate(current, corrections.current, estimate));
+      setEstimateStatus({ state: "done", scope, tooShort, estimate });
+    } catch (e) {
+      if (run !== estimateRun.current) return;
+      setEstimateStatus({ state: "failed", scope, message: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /** Settings changes from the panel; editing an Original value by hand makes it a correction. */
+  function changeKeyTempo(next: KeyTempoSettings) {
+    const { original } = keyTempo;
+    corrections.current = {
+      key: corrections.current.key || !sameKey(next.original.key, original.key),
+      tempo: corrections.current.tempo || next.original.tempo !== original.tempo,
+    };
+    setKeyTempo(next);
   }
 
   function onRegionDrag(next: Region, done: boolean) {
@@ -384,7 +440,13 @@ export function Editor() {
           </div>
 
           {plan && (
-            <KeyTempoControls settings={keyTempo} onChange={setKeyTempo} plan={plan} />
+            <KeyTempoControls
+              settings={keyTempo}
+              onChange={changeKeyTempo}
+              plan={plan}
+              estimate={estimateStatus}
+              onNewEstimate={() => void runEstimate(loaded.buffer, region, true)}
+            />
           )}
 
           <div className="controls">

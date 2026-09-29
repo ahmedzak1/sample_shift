@@ -6,6 +6,11 @@ export interface MusicalKey {
   mode: Mode;
 }
 
+/** Whether two keys (either possibly not set) are the same key. */
+export function sameKey(a: MusicalKey | null, b: MusicalKey | null): boolean {
+  return a?.tonic === b?.tonic && a?.mode === b?.mode;
+}
+
 /** Tonic spellings per mode, as usually written (Bb major, but G# minor). */
 const TONIC_NAMES: Record<Mode, string[]> = {
   major: ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"],

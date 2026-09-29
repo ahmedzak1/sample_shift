@@ -364,3 +364,32 @@ form input:disabled {
   flex-wrap: wrap;
   align-items: center;
 }
+
+.key-tempo .estimate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.key-tempo .estimate button,
+.halve-double button {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.key-tempo .estimate .warning {
+  color: var(--accent);
+}
+
+.error-text {
+  color: var(--error);
+}
+
+.halve-double {
+  display: flex;
+  gap: 6px;
+}

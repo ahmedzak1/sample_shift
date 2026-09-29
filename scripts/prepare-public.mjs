@@ -1,6 +1,7 @@
 // Puts the audio files the browser loads at runtime into public/:
 // - Rubber Band's .wasm (fetched by the render worker and the preview worklet)
 // - the live-preview AudioWorklet, bundled on its own because worklets run in a separate scope
+// - the Estimate worker, bundled on its own to keep Essentia's Emscripten loader out of Next's bundler
 import { copyFile, mkdir } from "node:fs/promises";
 import { build } from "esbuild";
 
@@ -13,5 +14,16 @@ await build({
   format: "esm",
   target: "es2022",
   minify: true,
+  logLevel: "warning",
+});
+await build({
+  entryPoints: ["src/audio/estimate.worker.ts"],
+  outfile: "public/estimate-worker.js",
+  bundle: true,
+  format: "iife",
+  target: "es2022",
+  minify: true,
+  // Essentia's loader only touches these when running under Node, never in the browser.
+  external: ["fs", "path", "crypto"],
   logLevel: "warning",
 });

@@ -1,13 +1,47 @@
 "use client";
 
 import { keyName, keysInMode, targetKeyOptions, type Mode, type MusicalKey } from "@/audio/musical-key";
-import type { KeyTempoSettings, SamplePlan } from "@/audio/sample-plan";
+import { MIN_ESTIMATE_SECONDS, type Estimate, type EstimateScope } from "@/audio/estimate";
+import { withOriginalKey, withOriginalTempo, type KeyTempoSettings, type SamplePlan } from "@/audio/sample-plan";
+
+/** Where the Estimate is up to, and what it was made from. */
+export type EstimateStatus =
+  | { state: "none" }
+  | { state: "running"; scope: EstimateScope; tooShort: boolean }
+  | { state: "done"; scope: EstimateScope; tooShort: boolean; estimate: Estimate }
+  | { state: "failed"; scope: EstimateScope; message: string };
 
 interface KeyTempoControlsProps {
   settings: KeyTempoSettings;
   onChange: (settings: KeyTempoSettings) => void;
   /** The Sample Plan for these settings, so the panel shows exactly what the export will do. */
   plan: Pick<SamplePlan, "changesKey" | "changesTempo" | "pitchShift" | "tempoPercent">;
+  estimate: EstimateStatus;
+  /** Estimates again, throwing away your corrections to the Original Key and Tempo. */
+  onNewEstimate: () => void;
+}
+
+function EstimateLine({ status, onNewEstimate }: { status: EstimateStatus; onNewEstimate: () => void }) {
+  if (status.state === "none") return null;
+  let text: string;
+  if (status.state === "running") text = `Estimating the ${status.scope}'s key and tempo…`;
+  else if (status.state === "failed") text = `Couldn't estimate key and tempo: ${status.message}`;
+  else {
+    const { key, tempo } = status.estimate;
+    const parts = [key ? keyName(key) : "key unclear", tempo ? `${tempo} BPM` : "tempo unclear"];
+    text = `Estimate for the ${status.scope}: ${parts.join(", ")}`;
+  }
+  return (
+    <div className="estimate" aria-live="polite">
+      <span className={status.state === "failed" ? "error-text" : undefined}>{text}</span>
+      {"tooShort" in status && status.tooShort && (
+        <span className="warning">The Region is under {MIN_ESTIMATE_SECONDS} seconds, so this Estimate may be off.</span>
+      )}
+      <button type="button" onClick={onNewEstimate} disabled={status.state === "running"}>
+        New Estimate
+      </button>
+    </div>
+  );
 }
 
 /** Option values for key selects: "<tonic>-<mode>", e.g. "9-minor". */
@@ -50,27 +84,21 @@ const MODES: { mode: Mode; label: string }[] = [
 ];
 
 /** Original and Target Key and Tempo, the Pitch Shift and its octave offset. */
-export function KeyTempoControls({ settings, onChange, plan }: KeyTempoControlsProps) {
+export function KeyTempoControls({ settings, onChange, plan, estimate, onNewEstimate }: KeyTempoControlsProps) {
   const { original, target, octaveOffset } = settings;
 
-  function setOriginalKey(key: MusicalKey | null) {
-    // The Target Key must stay in the Original Key's mode; start it at the Original Key.
-    const keepTarget = key !== null && target.key?.mode === key.mode;
-    onChange({
-      ...settings,
-      original: { ...original, key },
-      target: { ...target, key: keepTarget ? target.key : key },
-      octaveOffset: keepTarget ? octaveOffset : 0,
-    });
-  }
+  const setOriginalKey = (key: MusicalKey | null) => onChange(withOriginalKey(settings, key));
+  const setOriginalTempo = (tempo: number | null) => onChange(withOriginalTempo(settings, tempo));
 
-  function setOriginalTempo(tempo: number | null) {
-    onChange({ ...settings, original: { ...original, tempo }, target: { ...target, tempo: target.tempo ?? tempo } });
+  /** ×2 and ÷2: an estimated tempo often lands on half or double the real one. */
+  function scaleOriginalTempo(factor: number) {
+    if (original.tempo) setOriginalTempo(Math.round(original.tempo * factor * 100) / 100);
   }
 
   return (
     <fieldset className="key-tempo">
       <legend>Key &amp; tempo</legend>
+      <EstimateLine status={estimate} onNewEstimate={onNewEstimate} />
 
       <div className="row">
         <label className="field">
@@ -128,6 +156,14 @@ export function KeyTempoControls({ settings, onChange, plan }: KeyTempoControlsP
 
       <div className="row">
         <TempoInput label="Original Tempo" value={original.tempo} onChange={setOriginalTempo} />
+        <span className="halve-double" role="group" aria-label="Fix half or double tempo">
+          <button type="button" disabled={!original.tempo} onClick={() => scaleOriginalTempo(0.5)}>
+            ÷2
+          </button>
+          <button type="button" disabled={!original.tempo} onClick={() => scaleOriginalTempo(2)}>
+            ×2
+          </button>
+        </span>
         <TempoInput
           label="Target Tempo"
           value={target.tempo}

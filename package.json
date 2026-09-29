@@ -13,6 +13,7 @@
     "prebuild": "node scripts/prepare-public.mjs"
   },
   "dependencies": {
+    "essentia.js": "^0.1.3",
     "next": "^16.3.6",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

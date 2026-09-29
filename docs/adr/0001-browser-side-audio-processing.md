@@ -10,4 +10,4 @@ Sample Shift is a personal tool that runs on localhost, and it needs a live prev
 ## Consequences
 
 - Most of the app's logic is frontend code, and the server stays a thin fetcher: Next.js route handlers (Node runtime) that call `yt-dlp` and `ffmpeg` and serve the cached Source Tracks. Estimating key and tempo (essentia.js) also runs in the browser.
-- Rubber Band is GPL-licensed. That's fine for a personal tool, but it needs a second look if this is ever distributed.
+- Rubber Band is GPL-licensed and essentia.js (used for the Estimate) is AGPL-licensed. That's fine for a personal tool, but both need a second look if this is ever distributed or hosted for others.
