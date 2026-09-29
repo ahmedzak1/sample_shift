@@ -25,7 +25,20 @@ import { PreviewPlayer } from "@/audio/preview-player";
 import { renderInWorker } from "@/audio/render-in-worker";
 import { changesKeyOrTempo, decodedAudioFrom, regionAudio } from "@/audio/sample-render";
 import type { SourceTrack } from "@/tracks/source-track";
-import { KeyTempoControls, type EstimateStatus } from "./key-tempo-controls";
+import {
+  DownloadIcon,
+  FitRegionIcon,
+  KeyboardIcon,
+  LoopIcon,
+  PauseIcon,
+  PlayIcon,
+  WheelMark,
+  ZoomInIcon,
+  ZoomOutIcon,
+} from "./icons";
+import { editorHue, tonicHue } from "./key-colour";
+import { EstimateLine, TempoControls, type EstimateStatus } from "./key-tempo-controls";
+import { KeyWheel, WheelPoster } from "./key-wheel";
 import { Waveform, type WaveformView } from "./waveform";
 
 interface LoadedTrack {
@@ -66,6 +79,19 @@ function FetchProgress({ message }: { message: string }) {
       {message}
       {seconds >= SHOW_ELAPSED_AFTER_SECONDS && <span className="elapsed"> {seconds}s</span>}
     </p>
+  );
+}
+
+function Shortcuts({ className }: { className: string }) {
+  return (
+    <dl className={className} aria-label="Keyboard shortcuts">
+      <div><dt><kbd>Space</kbd></dt><dd>Play</dd></div>
+      <div><dt><kbd>A</kbd></dt><dd>Target / Source Track</dd></div>
+      <div><dt><kbd>[</kbd><kbd>]</kbd></dt><dd>Target Key</dd></div>
+      <div><dt><kbd>−</kbd><kbd>=</kbd></dt><dd>Target Tempo</dd></div>
+      <div><dt><kbd>L</kbd></dt><dd>Loop</dd></div>
+      <div><dt><kbd>Z</kbd></dt><dd>Zoom to Region</dd></div>
+    </dl>
   );
 }
 
@@ -121,6 +147,8 @@ export function Editor() {
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [listen, setListen] = useState<Listen>("target");
+  /** Whether the key wheel is correcting the Original Key rather than turning the Target Key. */
+  const [correcting, setCorrecting] = useState(false);
 
   /** Mirrors `playing` for the player's callbacks, which outlive a render. */
   const playingRef = useRef(false);
@@ -173,6 +201,7 @@ export function Editor() {
       cursor.current = 0;
       setRegion(null);
       setKeyTempo(NO_KEY_TEMPO_CHANGE);
+      setCorrecting(false);
       corrections.current = NO_CORRECTIONS;
       trackEstimate.current = null;
       setView({ start: 0, duration: buffer.duration });
@@ -361,108 +390,260 @@ export function Editor() {
 
   const total = loaded?.buffer.duration ?? 0;
   const zoomed = loaded !== null && view.duration < total;
+  const hearingTarget = listen === "target" && previewChanges;
+  const { original, target, octaveOffset } = keyTempo;
+  const hue = plan?.changesKey
+    ? editorHue(original.key, pitchShift - 12 * octaveOffset)
+    : original.key
+      ? tonicHue(original.key.tonic)
+      : null;
+  // The Source Track is heard in plain ink; the Target in its key's colour.
+  const flooded = hue !== null && (hearingTarget || !previewChanges);
 
-  return (
+  function turnTargetKey(step: number) {
+    if (!original.key || !target.key) return;
+    const tonic = (target.key.tonic + step + 12) % 12;
+    setKeyTempo({ ...keyTempo, target: { ...target, key: { tonic, mode: original.key.mode } } });
+  }
+
+  function nudgeTargetTempo(step: number) {
+    if (target.tempo === null) return;
+    const tempo = Math.min(999, Math.max(1, Math.round((target.tempo + step) * 100) / 100));
+    setKeyTempo({ ...keyTempo, target: { ...target, tempo } });
+  }
+
+  // Keyboard shortcuts, read through a ref so the listener always sees the latest state.
+  const onShortcut = useRef<(event: KeyboardEvent) => void>(() => {});
+  onShortcut.current = (event) => {
+    if (!loaded || event.ctrlKey || event.metaKey || event.altKey) return;
+    const el = event.target as HTMLElement;
+    if (el.closest("input, select, textarea, [contenteditable]")) return;
+    const actions: Record<string, () => void> = {
+      " ": () => (playing ? pause() : play()),
+      l: () => setLooping((on) => !on),
+      a: () => previewChanges && setListen((l) => (l === "target" ? "source-track" : "target")),
+      "[": () => turnTargetKey(-1),
+      "]": () => turnTargetKey(1),
+      "-": () => nudgeTargetTempo(-1),
+      "=": () => nudgeTargetTempo(1),
+      z: zoomToRegion,
+    };
+    const action = actions[event.key.toLowerCase()];
+    if (!action) return;
+    event.preventDefault();
+    action();
+  };
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => onShortcut.current(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
+
+  const fetchForm = (
+    <form className="fetch" onSubmit={fetchTrack}>
+      {/* Plain text, not type="url": links without https:// (e.g. youtu.be/…) are fine. */}
+      <input
+        type="text"
+        inputMode="url"
+        required
+        placeholder="Paste a YouTube link"
+        value={link}
+        onChange={(e) => setLink(e.target.value)}
+        aria-label="YouTube link"
+        disabled={status !== null}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <button type="submit" className="button ink" disabled={status !== null}>
+        Fetch
+      </button>
+    </form>
+  );
+  const fetchState = (
     <>
-      <form onSubmit={fetchTrack}>
-        {/* Plain text, not type="url": links without https:// (e.g. youtu.be/…) are fine. */}
-        <input
-          type="text"
-          inputMode="url"
-          required
-          placeholder="Paste a YouTube link"
-          value={link}
-          onChange={(e) => setLink(e.target.value)}
-          aria-label="YouTube link"
-          disabled={status !== null}
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <button type="submit" className="primary" disabled={status !== null}>
-          Fetch
-        </button>
-      </form>
       {status && <FetchProgress message={status} />}
       {error && <p className="error" role="alert">{error}</p>}
+    </>
+  );
 
-      {loaded && (
-        <section className="track">
-          <h2>{loaded.track.title}</h2>
-          <p className="meta">
-            {formatDuration(total)} · {loaded.buffer.sampleRate / 1000} kHz ·{" "}
-            {loaded.buffer.numberOfChannels === 1 ? "mono" : "stereo"}
-          </p>
+  const editorStyle = {
+    "--key-h": hue ?? 0,
+    "--key-c": flooded ? 0.15 : 0,
+  } as React.CSSProperties;
 
-          <Waveform
-            buffer={loaded.buffer}
-            view={view}
-            region={region}
-            playhead={playhead}
-            onRegionChange={onRegionDrag}
-            onSeek={seek}
-          />
-          <div className="zoom">
-            <button type="button" onClick={() => zoom(2)} disabled={view.duration <= MIN_VIEW_SECONDS} aria-label="Zoom in">
-              +
+  return (
+    <div className={`editor ${loaded ? "is-loaded" : "is-empty"}${flooded ? " is-flooded" : ""}`} style={editorStyle}>
+      <header className="topbar">
+        <span className="brand">
+          <WheelMark />
+          Sample Shift
+        </span>
+        {loaded && (
+          <div className="topbar-fetch">
+            {fetchForm}
+            {fetchState}
+          </div>
+        )}
+        {loaded && (
+          <>
+            <Shortcuts className="shortcuts" />
+            {/* Narrower windows keep the list behind a button. */}
+            <button type="button" className="icon-button shortcuts-button" popoverTarget="shortcuts-popover" title="Keyboard shortcuts">
+              <KeyboardIcon />
+              <span className="visually-hidden">Keyboard shortcuts</span>
             </button>
-            <button type="button" onClick={() => zoom(0.5)} disabled={!zoomed} aria-label="Zoom out">
-              −
-            </button>
-            <button type="button" onClick={zoomToRegion} disabled={!region}>
-              Zoom to Region
-            </button>
-            {zoomed && (
-              <input
-                type="range"
-                aria-label="Scroll waveform"
-                min={0}
-                max={total - view.duration}
-                step="any"
-                value={view.start}
-                onChange={(e) => setView({ ...view, start: Number(e.target.value) })}
+            <div id="shortcuts-popover" className="shortcuts-popover" popover="auto">
+              <Shortcuts className="shortcuts-list" />
+            </div>
+          </>
+        )}
+      </header>
+
+      {!loaded && (
+        <section className="welcome">
+          <WheelPoster />
+          <div className="welcome-copy">
+            <h1>Any part of a song, in your key and tempo.</h1>
+            <p>
+              Paste a YouTube link, pick a Region, turn the Target Key round the wheel and set the Target Tempo while
+              you listen. Then download a 24-bit WAV.
+            </p>
+            {fetchForm}
+            {fetchState}
+          </div>
+        </section>
+      )}
+
+      {loaded && plan && (
+        <>
+          <div className="track-head">
+            <h1>{loaded.track.title}</h1>
+            <p className="meta">
+              {formatDuration(total)} · {loaded.buffer.sampleRate / 1000} kHz ·{" "}
+              {loaded.buffer.numberOfChannels === 1 ? "mono" : "stereo"}
+            </p>
+          </div>
+
+          <main className="workbench">
+            <section className="key-panel" aria-label="Key">
+              <KeyWheel
+                settings={keyTempo}
+                onChange={changeKeyTempo}
+                pitchShift={pitchShift}
+                estimateKey={estimateStatus.state === "done" ? estimateStatus.estimate.key : null}
+                correcting={correcting}
+                onCorrectingChange={setCorrecting}
+                pendingText={estimateStatus.state === "running" ? "Estimating the key…" : "Key unclear"}
               />
-            )}
-          </div>
-
-          <div className="region">
-            <RegionTimeInput label="Start" value={region?.start ?? 0} onCommit={(t) => setRegionEdge("start", t)} />
-            <RegionTimeInput label="End" value={region?.end ?? total} onCommit={(t) => setRegionEdge("end", t)} />
-            {region ? (
-              <>
-                <span className="meta">Length {formatRegionTime(region.end - region.start)}</span>
-                <button type="button" onClick={() => changeRegion(null)}>
-                  Clear Region
+              <div className="key-actions">
+                <span className="octave" role="group" aria-label="Octave offset">
+                  <button
+                    type="button"
+                    className="chip"
+                    disabled={!plan.changesKey || octaveOffset <= -1}
+                    onClick={() => changeKeyTempo({ ...keyTempo, octaveOffset: octaveOffset - 1 })}
+                  >
+                    −1 octave
+                  </button>
+                  <button
+                    type="button"
+                    className="chip"
+                    disabled={!plan.changesKey || octaveOffset >= 1}
+                    onClick={() => changeKeyTempo({ ...keyTempo, octaveOffset: octaveOffset + 1 })}
+                  >
+                    +1 octave
+                  </button>
+                </span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => changeKeyTempo({ original, target: { ...original }, octaveOffset: 0 })}
+                  disabled={!original.key && !original.tempo}
+                >
+                  Reset to Original Key &amp; Tempo
                 </button>
-              </>
-            ) : (
-              <span className="meta">No Region yet — drag on the waveform or type a time. The whole Source Track is the Sample.</span>
-            )}
-          </div>
+              </div>
+              <EstimateLine status={estimateStatus} onNewEstimate={() => void runEstimate(loaded.buffer, region, true)} />
+            </section>
 
-          {plan && (
-            <KeyTempoControls
-              settings={keyTempo}
-              onChange={changeKeyTempo}
-              plan={plan}
-              estimate={estimateStatus}
-              onNewEstimate={() => void runEstimate(loaded.buffer, region, true)}
-            />
-          )}
+            <section className="wave-panel" aria-label="Region">
+              <Waveform
+                buffer={loaded.buffer}
+                view={view}
+                region={region}
+                playhead={playhead}
+                hue={flooded ? hue : null}
+                onRegionChange={onRegionDrag}
+                onSeek={seek}
+              />
+              {zoomed && (
+                <input
+                  type="range"
+                  className="scroller"
+                  aria-label="Scroll waveform"
+                  min={0}
+                  max={total - view.duration}
+                  step="any"
+                  value={view.start}
+                  onChange={(e) => setView({ ...view, start: Number(e.target.value) })}
+                />
+              )}
+              <div className="region-bar">
+                <span className="icon-group" role="group" aria-label="Zoom">
+                  <button type="button" className="icon-button" onClick={() => zoom(2)} disabled={view.duration <= MIN_VIEW_SECONDS} aria-label="Zoom in" title="Zoom in">
+                    <ZoomInIcon />
+                  </button>
+                  <button type="button" className="icon-button" onClick={() => zoom(0.5)} disabled={!zoomed} aria-label="Zoom out" title="Zoom out">
+                    <ZoomOutIcon />
+                  </button>
+                  <button type="button" className="icon-button" onClick={zoomToRegion} disabled={!region} aria-label="Zoom to Region" title="Zoom to Region (Z)">
+                    <FitRegionIcon />
+                  </button>
+                </span>
+                <RegionTimeInput label="Start" value={region?.start ?? 0} onCommit={(t) => setRegionEdge("start", t)} />
+                <RegionTimeInput label="End" value={region?.end ?? total} onCommit={(t) => setRegionEdge("end", t)} />
+                {region ? (
+                  <>
+                    <span className="meta">Length {formatRegionTime(region.end - region.start)}</span>
+                    <button type="button" className="text-button" onClick={() => changeRegion(null)}>
+                      Clear Region
+                    </button>
+                  </>
+                ) : (
+                  <span className="meta">No Region yet: drag on the waveform or type a time. The whole Source Track is the Sample.</span>
+                )}
+              </div>
 
-          <div className="controls">
-            <button type="button" onClick={playing ? pause : () => play()}>
-              {playing ? "Pause" : region ? "Play Region" : "Play"}
+              <TempoControls settings={keyTempo} onChange={changeKeyTempo} plan={plan} />
+            </section>
+          </main>
+
+          <footer className="rail">
+            <button
+              type="button"
+              className="play"
+              onClick={playing ? pause : () => play()}
+              aria-label={playing ? "Pause" : region ? "Play Region" : "Play"}
+              title={playing ? "Pause (Space)" : "Play (Space)"}
+            >
+              {playing ? <PauseIcon /> : <PlayIcon />}
             </button>
-            <label className="toggle">
-              <input type="checkbox" checked={looping} onChange={() => setLooping(!looping)} />
-              Loop
-            </label>
+            <button
+              type="button"
+              className={`icon-button toggle${looping ? " on" : ""}`}
+              aria-pressed={looping}
+              onClick={() => setLooping(!looping)}
+              title="Loop (L)"
+            >
+              <LoopIcon />
+              <span>Loop</span>
+            </button>
             <span className="listen" role="radiogroup" aria-label="Listen to">
               <button
                 type="button"
                 role="radio"
-                aria-checked={listen === "target" && previewChanges}
-                className={listen === "target" && previewChanges ? "on" : ""}
+                className="listen-target"
+                aria-checked={hearingTarget}
                 disabled={!previewChanges}
                 onClick={() => setListen("target")}
               >
@@ -471,29 +652,42 @@ export function Editor() {
               <button
                 type="button"
                 role="radio"
-                aria-checked={listen === "source-track" || !previewChanges}
-                className={listen === "source-track" || !previewChanges ? "on" : ""}
+                className="listen-source"
+                aria-checked={!hearingTarget}
                 disabled={!previewChanges}
                 onClick={() => setListen("source-track")}
               >
                 Source Track
               </button>
             </span>
-            <button type="button" className="primary" onClick={download} disabled={exportProgress !== null}>
-              {exportProgress === null ? "Download Sample" : `Rendering… ${Math.round(exportProgress * 100)}%`}
-            </button>
-          </div>
-          {exportProgress !== null && (
-            <progress className="export-progress" value={exportProgress} max={1} aria-label="Export progress" />
-          )}
-          {plan && <p className="meta filename">Saves as {plan.filename}</p>}
-          {exportError && (
-            <p className="error" role="alert">
-              {exportError}
-            </p>
-          )}
-        </section>
+            <span className="position" aria-hidden="true">
+              {formatRegionTime(playhead ?? region?.start ?? 0)}
+            </span>
+
+            <div className="export">
+              <button
+                type="button"
+                className="button ink download"
+                onClick={download}
+                disabled={exportProgress !== null}
+                title={`Saves as ${plan.filename}`}
+                style={{ "--progress": exportProgress ?? 0 } as React.CSSProperties}
+              >
+                <DownloadIcon />
+                {exportProgress === null ? "Download Sample" : `Rendering… ${Math.round(exportProgress * 100)}%`}
+              </button>
+              <p className="filename" title={plan.filename}>
+                {plan.filename}
+              </p>
+              {exportError && (
+                <p className="error" role="alert">
+                  {exportError}
+                </p>
+              )}
+            </div>
+          </footer>
+        </>
       )}
-    </>
+    </div>
   );
 }

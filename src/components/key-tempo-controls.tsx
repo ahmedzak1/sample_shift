@@ -1,8 +1,9 @@
 "use client";
 
-import { keyName, keysInMode, targetKeyOptions, type Mode, type MusicalKey } from "@/audio/musical-key";
+import { useEffect, useRef, useState } from "react";
+import { keyName } from "@/audio/musical-key";
 import { MIN_ESTIMATE_SECONDS, type Estimate, type EstimateScope } from "@/audio/estimate";
-import { withOriginalKey, withOriginalTempo, type KeyTempoSettings, type SamplePlan } from "@/audio/sample-plan";
+import { withOriginalTempo, type KeyTempoSettings, type SamplePlan } from "@/audio/sample-plan";
 
 /** Where the Estimate is up to, and what it was made from. */
 export type EstimateStatus =
@@ -11,83 +12,151 @@ export type EstimateStatus =
   | { state: "done"; scope: EstimateScope; tooShort: boolean; estimate: Estimate }
   | { state: "failed"; scope: EstimateScope; message: string };
 
-interface KeyTempoControlsProps {
-  settings: KeyTempoSettings;
-  onChange: (settings: KeyTempoSettings) => void;
-  /** The Sample Plan for these settings, so the panel shows exactly what the export will do. */
-  plan: Pick<SamplePlan, "changesKey" | "changesTempo" | "pitchShift" | "tempoPercent">;
-  estimate: EstimateStatus;
-  /** Estimates again, throwing away your corrections to the Original Key and Tempo. */
-  onNewEstimate: () => void;
-}
-
-function EstimateLine({ status, onNewEstimate }: { status: EstimateStatus; onNewEstimate: () => void }) {
+export function EstimateLine({ status, onNewEstimate }: { status: EstimateStatus; onNewEstimate: () => void }) {
   if (status.state === "none") return null;
-  let text: string;
+  let text: React.ReactNode;
   if (status.state === "running") text = `Estimating the ${status.scope}'s key and tempo…`;
-  else if (status.state === "failed") text = `Couldn't estimate key and tempo: ${status.message}`;
+  else if (status.state === "failed") text = <span className="error-text">Couldn&apos;t estimate key and tempo: {status.message}</span>;
   else {
     const { key, tempo } = status.estimate;
-    const parts = [key ? keyName(key) : "key unclear", tempo ? `${tempo} BPM` : "tempo unclear"];
-    text = `Estimate for the ${status.scope}: ${parts.join(", ")}`;
+    text = (
+      <>
+        Estimate for the {status.scope}: <b>{key ? keyName(key) : "key unclear"}</b>,{" "}
+        <b>{tempo ? `${tempo} BPM` : "tempo unclear"}</b>
+      </>
+    );
   }
   return (
-    <div className="estimate" aria-live="polite">
-      <span className={status.state === "failed" ? "error-text" : undefined}>{text}</span>
-      {"tooShort" in status && status.tooShort && (
-        <span className="warning">The Region is under {MIN_ESTIMATE_SECONDS} seconds, so this Estimate may be off.</span>
-      )}
-      <button type="button" onClick={onNewEstimate} disabled={status.state === "running"}>
+    <div className={`estimate${status.state === "running" ? " running" : ""}`} aria-live="polite">
+      <p>
+        {text}
+        {"tooShort" in status && status.tooShort && (
+          <span className="warning"> The Region is under {MIN_ESTIMATE_SECONDS} seconds, so this Estimate may be off.</span>
+        )}
+      </p>
+      <button type="button" className="text-button" onClick={onNewEstimate} disabled={status.state === "running"}>
         New Estimate
       </button>
     </div>
   );
 }
 
-/** Option values for key selects: "<tonic>-<mode>", e.g. "9-minor". */
-const keyValue = (key: MusicalKey | null) => (key ? `${key.tonic}-${key.mode}` : "");
-const KEYS_BY_VALUE = new Map([...keysInMode("major"), ...keysInMode("minor")].map((key) => [keyValue(key), key]));
+/** BPM with at most two decimals, trailing zeros dropped. */
+const formatTempo = (tempo: number | null) => (tempo === null ? "" : String(Math.round(tempo * 100) / 100));
 
-function TempoInput({ label, value, onChange }: { label: string; value: number | null; onChange: (tempo: number | null) => void }) {
+const clampTempo = (tempo: number) => Math.min(999, Math.max(1, Math.round(tempo * 100) / 100));
+
+/** Width of a typed tempo in ch: tabular digits are 1ch each, the decimal point about half. */
+function figureWidth(text: string): number {
+  const points = (text.match(/\./g) ?? []).length;
+  return Math.max(2, text.length - points * 0.55) + 0.15;
+}
+
+/** Pixels of vertical drag per BPM when scrubbing a tempo. */
+const SCRUB_PX_PER_BPM = 4;
+
+interface TempoFigureProps {
+  label: string;
+  value: number | null;
+  onChange: (tempo: number | null) => void;
+  size: "large" | "medium";
+}
+
+/**
+ * A tempo you can type, or scrub by dragging up and down (Shift for tenths).
+ * The arrow keys step it by 1 BPM, or 0.1 with Shift.
+ */
+function TempoFigure({ label, value, onChange, size }: TempoFigureProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState(formatTempo(value));
+  const [scrubbing, setScrubbing] = useState(false);
+  const scrub = useRef<{ y: number; from: number; moved: boolean } | null>(null);
+
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) setText(formatTempo(value));
+  }, [value]);
+
+  function commitText(next: string) {
+    setText(next);
+    const tempo = Number(next);
+    onChange(next.trim() && Number.isFinite(tempo) && tempo > 0 ? tempo : null);
+  }
+
   return (
-    <label className="field">
-      <span>{label}</span>
-      <span className="bpm">
+    <label className={`tempo-figure ${size}${scrubbing ? " scrubbing" : ""}`}>
+      <span className="caption">{label}</span>
+      <span className="figure">
         <input
-          type="number"
-          min={1}
-          max={999}
-          step="any"
-          inputMode="decimal"
-          value={value ?? ""}
+          ref={inputRef}
+          value={text}
           placeholder="—"
-          onChange={(e) => {
-            const tempo = Number(e.target.value);
-            onChange(e.target.value.trim() && Number.isFinite(tempo) && tempo > 0 ? tempo : null);
+          inputMode="decimal"
+          spellCheck={false}
+          autoComplete="off"
+          aria-describedby="tempo-scrub-hint"
+          // Sized to what's typed, so a tempo like 142.65 is never cut off.
+          style={{ width: `${figureWidth(text)}ch` }}
+          onChange={(e) => commitText(e.target.value)}
+          onBlur={() => setText(formatTempo(value))}
+          onKeyDown={(e) => {
+            const step = { ArrowUp: 1, ArrowDown: -1 }[e.key];
+            if (step && value !== null) {
+              e.preventDefault();
+              const next = clampTempo(value + step * (e.shiftKey ? 0.1 : 1));
+              setText(formatTempo(next));
+              onChange(next);
+            } else if (e.key === "Enter" || e.key === "Escape") {
+              setText(formatTempo(value));
+              inputRef.current?.blur();
+            }
+          }}
+          onPointerDown={(e) => {
+            if (document.activeElement === e.currentTarget || value === null || e.button !== 0) return;
+            // Hold off focusing: a drag scrubs, and only a plain click starts typing.
+            e.preventDefault();
+            scrub.current = { y: e.clientY, from: value, moved: false };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            const s = scrub.current;
+            if (!s) return;
+            const dy = s.y - e.clientY;
+            if (!s.moved && Math.abs(dy) < 3) return;
+            if (!s.moved) setScrubbing(true);
+            s.moved = true;
+            const next = clampTempo(s.from + (dy / SCRUB_PX_PER_BPM) * (e.shiftKey ? 0.1 : 1));
+            setText(formatTempo(next));
+            onChange(next);
+          }}
+          onPointerUp={(e) => {
+            const s = scrub.current;
+            scrub.current = null;
+            setScrubbing(false);
+            if (s && !s.moved) {
+              e.currentTarget.focus();
+              e.currentTarget.select();
+            }
+          }}
+          onPointerCancel={() => {
+            scrub.current = null;
+            setScrubbing(false);
           }}
         />
-        BPM
+        <span className="unit">BPM</span>
       </span>
     </label>
   );
 }
 
-function formatPitchShift(pitchShift: number): string {
-  if (pitchShift === 0) return "0 semitones";
-  const n = Math.abs(pitchShift);
-  return `${pitchShift > 0 ? "+" : "−"}${n} semitone${n === 1 ? "" : "s"}`;
+interface TempoControlsProps {
+  settings: KeyTempoSettings;
+  onChange: (settings: KeyTempoSettings) => void;
+  plan: Pick<SamplePlan, "changesTempo" | "tempoPercent">;
 }
 
-const MODES: { mode: Mode; label: string }[] = [
-  { mode: "major", label: "Major" },
-  { mode: "minor", label: "Minor" },
-];
-
-/** Original and Target Key and Tempo, the Pitch Shift and its octave offset. */
-export function KeyTempoControls({ settings, onChange, plan, estimate, onNewEstimate }: KeyTempoControlsProps) {
-  const { original, target, octaveOffset } = settings;
-
-  const setOriginalKey = (key: MusicalKey | null) => onChange(withOriginalKey(settings, key));
+/** The Original Tempo with its ÷2 and ×2 fixes, the Target Tempo, and the resulting stretch. */
+export function TempoControls({ settings, onChange, plan }: TempoControlsProps) {
+  const { original, target } = settings;
   const setOriginalTempo = (tempo: number | null) => onChange(withOriginalTempo(settings, tempo));
 
   /** ×2 and ÷2: an estimated tempo often lands on half or double the real one. */
@@ -96,94 +165,33 @@ export function KeyTempoControls({ settings, onChange, plan, estimate, onNewEsti
   }
 
   return (
-    <fieldset className="key-tempo">
-      <legend>Key &amp; tempo</legend>
-      <EstimateLine status={estimate} onNewEstimate={onNewEstimate} />
-
-      <div className="row">
-        <label className="field">
-          <span>Original Key</span>
-          <select value={keyValue(original.key)} onChange={(e) => setOriginalKey(KEYS_BY_VALUE.get(e.target.value) ?? null)}>
-            <option value="">Not set</option>
-            {MODES.map(({ mode, label }) => (
-              <optgroup key={mode} label={label}>
-                {keysInMode(mode).map((key) => (
-                  <option key={keyValue(key)} value={keyValue(key)}>
-                    {keyName(key)}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Target Key</span>
-          <select
-            value={keyValue(target.key)}
-            disabled={!original.key}
-            onChange={(e) => onChange({ ...settings, target: { ...target, key: KEYS_BY_VALUE.get(e.target.value) ?? null } })}
-          >
-            {!original.key && <option value="">Set the Original Key first</option>}
-            {original.key &&
-              targetKeyOptions(original.key).map((option) => (
-                <option key={keyValue(option.key)} value={keyValue(option.key)}>
-                  {option.label} (relative: {option.relative})
-                </option>
-              ))}
-          </select>
-        </label>
-        <div className="readout" aria-live="polite">
-          <span>Pitch Shift</span>
-          <strong>{plan.changesKey ? formatPitchShift(plan.pitchShift) : "—"}</strong>
-        </div>
-        <span className="octave" role="group" aria-label="Octave offset">
-          <button
-            type="button"
-            disabled={!plan.changesKey || octaveOffset <= -1}
-            onClick={() => onChange({ ...settings, octaveOffset: octaveOffset - 1 })}
-          >
-            −1 octave
-          </button>
-          <button
-            type="button"
-            disabled={!plan.changesKey || octaveOffset >= 1}
-            onClick={() => onChange({ ...settings, octaveOffset: octaveOffset + 1 })}
-          >
-            +1 octave
-          </button>
-        </span>
-      </div>
-
-      <div className="row">
-        <TempoInput label="Original Tempo" value={original.tempo} onChange={setOriginalTempo} />
+    <div className="tempo">
+      <div className="tempo-original">
+        <TempoFigure label="Original Tempo" value={original.tempo} onChange={setOriginalTempo} size="medium" />
         <span className="halve-double" role="group" aria-label="Fix half or double tempo">
-          <button type="button" disabled={!original.tempo} onClick={() => scaleOriginalTempo(0.5)}>
+          <button type="button" className="chip" disabled={!original.tempo} onClick={() => scaleOriginalTempo(0.5)}>
             ÷2
           </button>
-          <button type="button" disabled={!original.tempo} onClick={() => scaleOriginalTempo(2)}>
+          <button type="button" className="chip" disabled={!original.tempo} onClick={() => scaleOriginalTempo(2)}>
             ×2
           </button>
         </span>
-        <TempoInput
+      </div>
+      <div className="tempo-target">
+        <TempoFigure
           label="Target Tempo"
           value={target.tempo}
           onChange={(tempo) => onChange({ ...settings, target: { ...target, tempo } })}
+          size="large"
         />
-        <div className="readout" aria-live="polite">
-          <span>Tempo</span>
+        <p className="stretch" aria-live="polite">
           <strong>{plan.changesTempo ? `${plan.tempoPercent}%` : "—"}</strong>
-        </div>
+          <span>of the Original Tempo</span>
+        </p>
       </div>
-
-      <div className="row reset">
-        <button
-          type="button"
-          onClick={() => onChange({ original, target: { ...original }, octaveOffset: 0 })}
-          disabled={!original.key && !original.tempo}
-        >
-          Reset to Original Key &amp; Tempo
-        </button>
-      </div>
-    </fieldset>
+      <p id="tempo-scrub-hint" className="hint">
+        Drag a tempo up or down to change it; Shift for tenths.
+      </p>
+    </div>
   );
 }

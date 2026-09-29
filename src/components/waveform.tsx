@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { decodedAudioFrom } from "@/audio/sample-render";
 import type { Region, RegionEdge } from "@/audio/sample-plan";
+import { hueColour } from "./key-colour";
 
 /** The stretch of the Source Track currently shown, in seconds. */
 export interface WaveformView {
@@ -16,6 +17,8 @@ interface WaveformProps {
   region: Region | null;
   /** Playhead position in seconds, or null to hide it. */
   playhead: number | null;
+  /** The editor's hue, for the Region; null draws it in ink. */
+  hue: number | null;
   /** Called continuously while a Region is dragged, and with `done` once the drag ends. */
   onRegionChange: (region: Region, done: boolean) => void;
   onSeek: (seconds: number) => void;
@@ -31,6 +34,17 @@ type Drag = { anchor: number; startX: number; moved: boolean };
 /** The Region spanning a drag's anchor and the pointer's time, edges in order. */
 function regionBetween(anchor: number, t: number): Region {
   return { start: Math.min(anchor, t), end: Math.max(anchor, t) };
+}
+
+/** Seconds between ruler marks, from the finest; the first that leaves room for a label is used. */
+const RULER_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
+
+/** A ruler label: m:ss, with as many decimals as the spacing needs. */
+function rulerLabel(seconds: number, spacing: number): string {
+  const decimals = spacing >= 1 ? 0 : spacing >= 0.1 ? 1 : 2;
+  const m = Math.floor(seconds / 60);
+  const s = (seconds - m * 60).toFixed(decimals).padStart(decimals ? decimals + 3 : 2, "0");
+  return `${m}:${s}`;
 }
 
 /** min/max peaks per pixel column for the visible part of the Source Track. */
@@ -60,7 +74,7 @@ function computePeaks(buffer: AudioBuffer, view: WaveformView, columns: number):
  * Draws the visible part of the Source Track with the Region and playhead.
  * Drag to create a Region, drag near an edge to move that edge, click to move the playhead.
  */
-export function Waveform({ buffer, view, region, playhead, onRegionChange, onSeek }: WaveformProps) {
+export function Waveform({ buffer, view, region, playhead, hue, onRegionChange, onSeek }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drag = useRef<Drag | null>(null);
   const [pixelWidth, setPixelWidth] = useState(0);
@@ -93,28 +107,60 @@ export function Waveform({ buffer, view, region, playhead, onRegionChange, onSee
     const xAt = (t: number) => ((t - view.start) / view.duration) * width;
 
     ctx.clearRect(0, 0, width, height);
+    const ink = styles.getPropertyValue("--ink");
+    const inkFaint = styles.getPropertyValue("--ink-faint");
+    const regionFill = hue === null ? styles.getPropertyValue("--rule") : hueColour(hue, "wash");
+    const regionEdge = hue === null ? ink : hueColour(hue, "strong");
+    const inRegion = (x: number) => !region || (x >= xAt(region.start) && x <= xAt(region.end));
+
     if (region) {
-      ctx.fillStyle = styles.getPropertyValue("--region");
+      ctx.fillStyle = regionFill;
       ctx.fillRect(xAt(region.start), 0, xAt(region.end) - xAt(region.start), height);
     }
 
+    // The centre line, then the waveform: in ink inside the Region, faint outside it.
     const mid = height / 2;
-    ctx.fillStyle = styles.getPropertyValue("--wave");
+    ctx.fillStyle = inkFaint;
+    ctx.fillRect(0, Math.round(mid), width, Math.max(1, ratio / 2));
     for (let x = 0; x < width; x++) {
       const min = peaks[x * 2];
       const max = peaks[x * 2 + 1];
-      ctx.fillRect(x, mid - max * mid, 1, Math.max(1, (max - min) * mid));
+      ctx.fillStyle = inRegion(x) ? ink : inkFaint;
+      ctx.fillRect(x, mid - max * mid * 0.92, 1, Math.max(1, (max - min) * mid * 0.92));
+    }
+
+    // A time ruler along the bottom, so Region edges can be read against it.
+    const perSecond = width / view.duration;
+    const spacing = RULER_STEPS.find((s) => s * perSecond >= 84 * ratio) ?? 600;
+    ctx.font = `650 ${11 * ratio}px ${styles.fontFamily}`;
+    ctx.textBaseline = "bottom";
+    for (let i = Math.ceil(view.start / spacing); i * spacing <= view.start + view.duration; i++) {
+      const t = i * spacing;
+      const x = Math.round(xAt(t));
+      ctx.fillStyle = inkFaint;
+      ctx.fillRect(x, height - 7 * ratio, ratio, 7 * ratio);
+      // Leave out a label a Region edge would run through.
+      const label = rulerLabel(t, spacing);
+      const labelEnd = x + 6 * ratio + ctx.measureText(label).width;
+      if (region && [region.start, region.end].some((e) => xAt(e) >= x - 2 * ratio && xAt(e) <= labelEnd)) continue;
+      ctx.fillStyle = styles.getPropertyValue("--ink-3");
+      ctx.fillText(label, x + 4 * ratio, height - 2 * ratio);
     }
 
     if (region) {
-      ctx.fillStyle = styles.getPropertyValue("--region-edge");
-      for (const t of [region.start, region.end]) ctx.fillRect(Math.round(xAt(t)) - ratio, 0, 2 * ratio, height);
+      ctx.fillStyle = regionEdge;
+      for (const t of [region.start, region.end]) {
+        const x = Math.round(xAt(t));
+        ctx.fillRect(x - ratio, 0, 2 * ratio, height);
+        // A tab at the top of each edge, to show it can be grabbed.
+        ctx.fillRect(t === region.start ? x - ratio : x - 7 * ratio, 0, 8 * ratio, 10 * ratio);
+      }
     }
     if (playhead !== null) {
-      ctx.fillStyle = styles.getPropertyValue("--accent");
-      ctx.fillRect(Math.round(xAt(playhead)), 0, Math.max(1, ratio), height);
+      ctx.fillStyle = ink;
+      ctx.fillRect(Math.round(xAt(playhead)) - ratio / 2, 0, Math.max(1, ratio * 1.5), height);
     }
-  }, [peaks, pixelWidth, view, region, playhead]);
+  }, [peaks, pixelWidth, view, region, playhead, hue]);
 
   function timeAt(clientX: number): number {
     const rect = canvasRef.current!.getBoundingClientRect();

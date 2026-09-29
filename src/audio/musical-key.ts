@@ -28,7 +28,7 @@ export function shortKeyName(key: MusicalKey): string {
 }
 
 /** The key with the same notes in the other mode (C major ↔ A minor). */
-function relativeKey(key: MusicalKey): MusicalKey {
+export function relativeKey(key: MusicalKey): MusicalKey {
   return key.mode === "major"
     ? { tonic: (key.tonic + 9) % 12, mode: "minor" }
     : { tonic: (key.tonic + 3) % 12, mode: "major" };
