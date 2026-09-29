@@ -11,3 +11,6 @@ public/estimate-worker.js
 
 # Session handoff notes (local only)
 HANDOFF.md
+
+# Impeccable design tooling: review screenshots, briefs, config (local only)
+.impeccable/
